@@ -3,6 +3,7 @@ import Cocoa
 private let exitKeyCode: Int64 = 109 // F10
 private let exitMediaKey = 7         // F10 when it is the mute key
 private let triplePressGap: TimeInterval = 0.6
+private let keepAwakeDefaultsKey = "keepAwakeWhileCovered"
 private let eventMask: CGEventMask = {
     let codes: [UInt64] = [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 14, 18, 19, 20, 22, 25, 26, 27, 29, 30, 31, 32]
     return codes.reduce(0) { $0 | (1 << $1) }
@@ -24,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalHotkeyMonitor: Any?
     private var localHotkeyMonitor: Any?
     private var exitPressTimes: [TimeInterval] = []
+    private var sleepActivity: NSObjectProtocol?
+    private var keepAwakeItem: NSMenuItem?
 
     private let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -46,12 +49,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "ScreenCurtain")
         image?.isTemplate = true
         item.button?.image = image
+        UserDefaults.standard.register(defaults: [keepAwakeDefaultsKey: true])
         let menu = NSMenu()
         let cover = NSMenuItem(title: "Cover screen", action: #selector(coverScreen), keyEquivalent: "")
         cover.target = self
+        let keepAwake = NSMenuItem(title: "Keep awake while covered", action: #selector(toggleKeepAwake), keyEquivalent: "")
+        keepAwake.target = self
+        keepAwake.state = UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey) ? .on : .off
+        keepAwakeItem = keepAwake
         let quit = NSMenuItem(title: "Quit", action: #selector(quitNow), keyEquivalent: "q")
         quit.target = self
         menu.addItem(cover)
+        menu.addItem(keepAwake)
         menu.addItem(.separator())
         menu.addItem(quit)
         item.menu = menu
@@ -74,6 +83,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         startCurtain()
+    }
+
+    @objc private func toggleKeepAwake() {
+        let enabled = !UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey)
+        UserDefaults.standard.set(enabled, forKey: keepAwakeDefaultsKey)
+        keepAwakeItem?.state = enabled ? .on : .off
+        guard tap != nil else { return }
+        if enabled { preventSleep() } else { allowSleep() }
     }
 
     private func beginTrustWatch() {
@@ -204,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tick()
         clockTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
         topTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.keepOnTop() }
+        preventSleep()
     }
 
     private func installTap() -> Bool {
@@ -305,7 +323,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cursorHidden = false
     }
 
+    private func preventSleep() {
+        guard UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey), sleepActivity == nil else { return }
+        sleepActivity = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "ScreenCurtain is covering the screen")
+    }
+
+    private func allowSleep() {
+        guard let sleepActivity else { return }
+        ProcessInfo.processInfo.endActivity(sleepActivity)
+        self.sleepActivity = nil
+    }
+
     private func stopCurtain() {
+        allowSleep()
         clockTimer?.invalidate()
         topTimer?.invalidate()
         clockTimer = nil
