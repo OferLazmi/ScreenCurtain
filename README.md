@@ -8,7 +8,7 @@ The cover is not a real lock. It does not ask for a password, and it does not re
 
 The ready-made app runs on Apple silicon Macs only.
 
-[Download ScreenCurtain for Apple silicon](https://github.com/OferLazmi/ScreenCurtain/releases/download/v1.0/ScreenCurtain-macOS-arm64.zip)
+[Download ScreenCurtain for Apple silicon](https://github.com/OferLazmi/ScreenCurtain/releases/download/v1.1/ScreenCurtain-macOS-arm64.zip)
 
 1. Unzip the file.
 2. Move `ScreenCurtain.app` to the Applications folder.
@@ -34,7 +34,10 @@ The app cannot turn this on by itself. You have to click the switch. After a new
 - Typing, clicking, scrolling, and trackpad gestures from the person at the Mac do nothing while the cover is up.
 - Input sent by other programs, such as automation, AppleScript, Python, or Quartz, still reaches the apps underneath.
 - Press **F10** once to remove the cover. The lock icon stays in the menu bar.
-- **Keep awake while covered** is on by default. The screen stays on, and the Mac does not go to sleep by itself. Click that menu item to turn it off. The Mac remembers your choice. Closing the lid still sleeps the Mac.
+- **Keep awake while covered** is on by default. While the cover is up, the screen stays on and the Mac does not go to sleep by itself. Click that menu item to turn it off. The Mac remembers your choice. Closing the lid still sleeps the Mac.
+- **Keep screen on** keeps the screen on without the cover. It is off by default. The Mac remembers your choice.
+- **For a set time…** keeps the screen on for 1 to 99 hours or days, without the cover. The menu shows the end time. The menu-bar app has to stay running. If you quit, the Mac can sleep. Open the app again before the end time and the countdown continues.
+- **Stop keeping screen on** appears only while that mode is on. It turns the mode off. In the time window, **Stop** does the same thing. **Cancel** only closes the window.
 - **Quit** stops the app and removes the icon.
 
 ScreenCurtain is not added to Login Items. After a restart, open `/Applications/ScreenCurtain.app` again.

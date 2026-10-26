@@ -4,6 +4,8 @@ private let exitKeyCode: Int64 = 109 // F10
 private let exitMediaKey = 7         // F10 when it is the mute key
 private let triplePressGap: TimeInterval = 0.6
 private let keepAwakeDefaultsKey = "keepAwakeWhileCovered"
+private let keepScreenOnDefaultsKey = "keepScreenOn"
+private let keepScreenOnUntilKey = "keepScreenOnUntil"
 private let eventMask: CGEventMask = {
     let codes: [UInt64] = [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 14, 18, 19, 20, 22, 25, 26, 27, 29, 30, 31, 32]
     return codes.reduce(0) { $0 | (1 << $1) }
@@ -11,7 +13,7 @@ private let eventMask: CGEventMask = {
 
 private let appDelegate = AppDelegate()
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var windows: [(window: NSPanel, timeLabel: NSTextField, dateLabel: NSTextField)] = []
     private var permissionWindow: NSWindow?
@@ -27,6 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var exitPressTimes: [TimeInterval] = []
     private var sleepActivity: NSObjectProtocol?
     private var keepAwakeItem: NSMenuItem?
+    private var keepScreenOnItem: NSMenuItem?
+    private var stopMenuItem: NSMenuItem?
+    private var timedKeepAwakeItem: NSMenuItem?
+    private var sleepTimer: Timer?
+    private var durationWindow: NSWindow?
+    private var durationField: NSTextField?
+    private var durationUnits: NSPopUpButton?
+    private var durationStopButton: NSButton?
+    private var durationCancelButton: NSButton?
 
     private let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -42,6 +53,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return formatter
     }()
 
+    private let untilFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -49,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "ScreenCurtain")
         image?.isTemplate = true
         item.button?.image = image
-        UserDefaults.standard.register(defaults: [keepAwakeDefaultsKey: true])
+        UserDefaults.standard.register(defaults: [keepAwakeDefaultsKey: true, keepScreenOnDefaultsKey: false])
         let menu = NSMenu()
         let cover = NSMenuItem(title: "Cover screen", action: #selector(coverScreen), keyEquivalent: "")
         cover.target = self
@@ -57,15 +76,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keepAwake.target = self
         keepAwake.state = UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey) ? .on : .off
         keepAwakeItem = keepAwake
+        let keepScreenOn = NSMenuItem(title: "Keep screen on", action: #selector(toggleKeepScreenOn), keyEquivalent: "")
+        keepScreenOn.target = self
+        keepScreenOn.state = UserDefaults.standard.bool(forKey: keepScreenOnDefaultsKey) ? .on : .off
+        keepScreenOnItem = keepScreenOn
+        let forTime = NSMenuItem(title: "For a set time…", action: #selector(showDurationWindow), keyEquivalent: "")
+        forTime.target = self
+        let until = NSMenuItem(title: "Until", action: nil, keyEquivalent: "")
+        until.isEnabled = false
+        until.isHidden = true
+        timedKeepAwakeItem = until
+        let stop = NSMenuItem(title: "Stop keeping screen on", action: #selector(stopKeepingScreenOn), keyEquivalent: "")
+        stop.target = self
+        stop.isHidden = true
+        stopMenuItem = stop
         let quit = NSMenuItem(title: "Quit", action: #selector(quitNow), keyEquivalent: "q")
         quit.target = self
         menu.addItem(cover)
         menu.addItem(keepAwake)
+        menu.addItem(keepScreenOn)
+        menu.addItem(forTime)
+        menu.addItem(until)
+        menu.addItem(stop)
         menu.addItem(.separator())
         menu.addItem(quit)
+        menu.delegate = self
         item.menu = menu
         statusItem = item
+        restoreTimedKeepAwake()
+        updateStopVisibility()
+        updateSleep()
         if AXIsProcessTrusted() { startHotkeyMonitor() }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        updateTimedItem()
+        updateStopVisibility()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -89,8 +135,161 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let enabled = !UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey)
         UserDefaults.standard.set(enabled, forKey: keepAwakeDefaultsKey)
         keepAwakeItem?.state = enabled ? .on : .off
-        guard tap != nil else { return }
-        if enabled { preventSleep() } else { allowSleep() }
+        updateSleep()
+    }
+
+    @objc private func toggleKeepScreenOn() {
+        let enabled = !UserDefaults.standard.bool(forKey: keepScreenOnDefaultsKey)
+        UserDefaults.standard.set(enabled, forKey: keepScreenOnDefaultsKey)
+        keepScreenOnItem?.state = enabled ? .on : .off
+        clearSleepTimer()
+        updateStopVisibility()
+        updateSleep()
+    }
+
+    @objc private func stopKeepingScreenOn() {
+        UserDefaults.standard.set(false, forKey: keepScreenOnDefaultsKey)
+        keepScreenOnItem?.state = .off
+        clearSleepTimer()
+        updateStopVisibility()
+        updateSleep()
+        closeDurationWindow()
+    }
+
+    @objc private func showDurationWindow() {
+        if durationWindow != nil {
+            updateStopVisibility()
+            durationWindow?.makeKeyAndOrderFront(nil)
+            activateApp()
+            return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "ScreenCurtain"
+        window.isReleasedWhenClosed = false
+        let label = NSTextField(labelWithString: "Keep the screen on for")
+        label.frame = NSRect(x: 20, y: 100, width: 300, height: 22)
+        let field = NSTextField(frame: NSRect(x: 20, y: 62, width: 70, height: 24))
+        field.stringValue = "1"
+        let units = NSPopUpButton(frame: NSRect(x: 100, y: 58, width: 140, height: 28), pullsDown: false)
+        units.addItems(withTitles: ["Hours", "Days"])
+        let startButton = NSButton(title: "Start", target: self, action: #selector(startTimedKeepAwake))
+        startButton.frame = NSRect(x: 20, y: 16, width: 90, height: 32)
+        startButton.keyEquivalent = "\r"
+        let stopButton = NSButton(title: "Stop", target: self, action: #selector(stopKeepingScreenOn))
+        stopButton.frame = NSRect(x: 120, y: 16, width: 90, height: 32)
+        durationStopButton = stopButton
+        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(closeDurationWindow))
+        cancelButton.frame = NSRect(x: 220, y: 16, width: 90, height: 32)
+        durationCancelButton = cancelButton
+        let view = NSView(frame: window.contentView!.bounds)
+        view.addSubview(label)
+        view.addSubview(field)
+        view.addSubview(units)
+        view.addSubview(startButton)
+        view.addSubview(stopButton)
+        view.addSubview(cancelButton)
+        window.contentView = view
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        durationWindow = window
+        durationField = field
+        durationUnits = units
+        updateStopVisibility()
+        window.makeFirstResponder(field)
+        activateApp()
+    }
+
+    @objc private func closeDurationWindow() {
+        durationWindow?.close()
+        durationWindow = nil
+        durationField = nil
+        durationUnits = nil
+        durationStopButton = nil
+        durationCancelButton = nil
+    }
+
+    @objc private func startTimedKeepAwake() {
+        let text = durationField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let count = Int(text), count >= 1, count <= 99 else { return }
+        let hours = durationUnits?.indexOfSelectedItem == 1 ? count * 24 : count
+        let end = Date().addingTimeInterval(TimeInterval(hours) * 3600)
+        UserDefaults.standard.set(true, forKey: keepScreenOnDefaultsKey)
+        UserDefaults.standard.set(end.timeIntervalSince1970, forKey: keepScreenOnUntilKey)
+        keepScreenOnItem?.state = .on
+        scheduleSleepTimer(until: end)
+        updateTimedItem()
+        updateStopVisibility()
+        updateSleep()
+        closeDurationWindow()
+    }
+
+    private func restoreTimedKeepAwake() {
+        let until = UserDefaults.standard.double(forKey: keepScreenOnUntilKey)
+        guard until > 0 else { return }
+        let end = Date(timeIntervalSince1970: until)
+        guard end > Date() else {
+            finishTimedKeepAwake()
+            return
+        }
+        UserDefaults.standard.set(true, forKey: keepScreenOnDefaultsKey)
+        keepScreenOnItem?.state = .on
+        scheduleSleepTimer(until: end)
+        updateTimedItem()
+        updateStopVisibility()
+    }
+
+    private func scheduleSleepTimer(until end: Date) {
+        sleepTimer?.invalidate()
+        let interval = end.timeIntervalSinceNow
+        guard interval > 0 else {
+            finishTimedKeepAwake()
+            return
+        }
+        sleepTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            self?.finishTimedKeepAwake()
+        }
+    }
+
+    private func finishTimedKeepAwake() {
+        clearSleepTimer()
+        UserDefaults.standard.set(false, forKey: keepScreenOnDefaultsKey)
+        keepScreenOnItem?.state = .off
+        updateTimedItem()
+        updateStopVisibility()
+        updateSleep()
+    }
+
+    private func clearSleepTimer() {
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        UserDefaults.standard.removeObject(forKey: keepScreenOnUntilKey)
+        updateTimedItem()
+    }
+
+    private func updateTimedItem() {
+        let until = UserDefaults.standard.double(forKey: keepScreenOnUntilKey)
+        let end = Date(timeIntervalSince1970: until)
+        guard until > 0, end > Date() else {
+            timedKeepAwakeItem?.isHidden = true
+            return
+        }
+        timedKeepAwakeItem?.title = "Until \(untilFormatter.string(from: end))"
+        timedKeepAwakeItem?.isHidden = false
+    }
+
+    private func updateStopVisibility() {
+        let on = UserDefaults.standard.bool(forKey: keepScreenOnDefaultsKey)
+        stopMenuItem?.isHidden = !on
+        durationStopButton?.isHidden = !on
+        durationCancelButton?.frame = NSRect(x: on ? 220 : 120, y: 16, width: 90, height: 32)
+    }
+
+    private func activateApp() {
+        if #available(macOS 14, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func beginTrustWatch() {
@@ -221,7 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tick()
         clockTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
         topTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.keepOnTop() }
-        preventSleep()
+        updateSleep()
     }
 
     private func installTap() -> Bool {
@@ -323,9 +522,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cursorHidden = false
     }
 
+    private func updateSleep() {
+        let keepScreenOn = UserDefaults.standard.bool(forKey: keepScreenOnDefaultsKey)
+        let keepWhileCovered = tap != nil && UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey)
+        if keepScreenOn || keepWhileCovered { preventSleep() } else { allowSleep() }
+    }
+
     private func preventSleep() {
-        guard UserDefaults.standard.bool(forKey: keepAwakeDefaultsKey), sleepActivity == nil else { return }
-        sleepActivity = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "ScreenCurtain is covering the screen")
+        guard sleepActivity == nil else { return }
+        sleepActivity = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "ScreenCurtain is keeping the Mac awake")
     }
 
     private func allowSleep() {
@@ -335,7 +540,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopCurtain() {
-        allowSleep()
         clockTimer?.invalidate()
         topTimer?.invalidate()
         clockTimer = nil
@@ -347,6 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showCursor()
         for item in windows { item.window.close() }
         windows.removeAll()
+        updateSleep()
     }
 
     @objc private func quitNow() {
