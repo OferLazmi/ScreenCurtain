@@ -8,7 +8,7 @@ The cover is not a real lock. It does not ask for a password, and it does not re
 
 The ready-made app runs on Apple silicon Macs only.
 
-[Download ScreenCurtain for Apple silicon](https://github.com/OferLazmi/ScreenCurtain/releases/download/v1.1/ScreenCurtain-macOS-arm64.zip)
+[Download ScreenCurtain for Apple silicon](https://github.com/OferLazmi/ScreenCurtain/releases/download/v1.2/ScreenCurtain-macOS-arm64.zip)
 
 1. Unzip the file.
 2. Move `ScreenCurtain.app` to the Applications folder.
@@ -29,7 +29,7 @@ The app cannot turn this on by itself. You have to click the switch. After a new
 
 ## What to do
 
-- **Cover screen** puts a black page on every display. It shows a lock, the time, and the date. It also covers the menu bar and the Dock.
+- **Cover screen** puts a black page on every display. It shows a lock, the time, and the date. They drift around the screen and bounce off the edges, like a screensaver. The page also covers the menu bar and the Dock.
 - Press **F10** three times, quickly, to cover the screen. On a MacBook, F10 is often the mute key, so three presses of the mute key do the same thing. Those presses still change the mute setting. **Fn+F10** three times also works.
 - Typing, clicking, scrolling, and trackpad gestures from the person at the Mac do nothing while the cover is up.
 - Input sent by other programs, such as automation, AppleScript, Python, or Quartz, still reaches the apps underneath.

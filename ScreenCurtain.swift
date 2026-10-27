@@ -15,7 +15,7 @@ private let appDelegate = AppDelegate()
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private var windows: [(window: NSPanel, timeLabel: NSTextField, dateLabel: NSTextField)] = []
+    private var windows: [(window: NSPanel, curtain: CurtainView)] = []
     private var permissionWindow: NSWindow?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -487,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panel.contentView = content
             panel.setFrame(screen.frame, display: true)
             panel.orderFrontRegardless()
-            windows.append((panel, content.timeLabel, content.dateLabel))
+            windows.append((panel, content))
         }
         tick()
     }
@@ -497,8 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let time = timeFormatter.string(from: now)
         let day = dateFormatter.string(from: now)
         for item in windows {
-            item.timeLabel.stringValue = time
-            item.dateLabel.stringValue = day
+            item.curtain.refreshClock(time: time, day: day)
         }
     }
 
@@ -570,6 +569,10 @@ final class CurtainView: NSView {
     let lockView = LockView()
     let timeLabel = NSTextField(labelWithString: "")
     let dateLabel = NSTextField(labelWithString: "")
+    private let cluster = NSView()
+    private var moveTimer: Timer?
+    private var velocity = NSPoint(x: 40, y: 28)
+    private var didPlace = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -579,18 +582,99 @@ final class CurtainView: NSView {
         dateLabel.alignment = .center
         dateLabel.textColor = NSColor.white.withAlphaComponent(0.75)
         dateLabel.font = NSFont.systemFont(ofSize: 20, weight: .regular)
-        addSubview(lockView)
-        addSubview(timeLabel)
-        addSubview(dateLabel)
+        cluster.addSubview(lockView)
+        cluster.addSubview(timeLabel)
+        cluster.addSubview(dateLabel)
+        addSubview(cluster)
     }
 
     required init?(coder: NSCoder) { nil }
 
+    deinit {
+        moveTimer?.invalidate()
+    }
+
+    func refreshClock(time: String, day: String) {
+        timeLabel.stringValue = time
+        dateLabel.stringValue = day
+        layoutClusterContents()
+        clampCluster()
+    }
+
     override func layout() {
         super.layout()
-        lockView.frame = NSRect(x: bounds.midX - 40, y: bounds.midY + 10, width: 80, height: 80)
-        timeLabel.frame = NSRect(x: 0, y: bounds.midY - 80, width: bounds.width, height: 76)
-        dateLabel.frame = NSRect(x: 0, y: bounds.midY - 120, width: bounds.width, height: 28)
+        layoutClusterContents()
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        if !didPlace {
+            didPlace = true
+            cluster.setFrameOrigin(NSPoint(x: max(0, (bounds.width - cluster.frame.width) / 2), y: max(0, (bounds.height - cluster.frame.height) / 2)))
+        } else {
+            clampCluster()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        moveTimer?.invalidate()
+        moveTimer = nil
+        guard window != nil else { return }
+        let angle = CGFloat.random(in: 0..<(2 * .pi))
+        let speed: CGFloat = 42
+        velocity = NSPoint(x: cos(angle) * speed, y: sin(angle) * speed)
+        if abs(velocity.x) < 14 { velocity.x = velocity.x < 0 ? -18 : 18 }
+        if abs(velocity.y) < 14 { velocity.y = velocity.y < 0 ? -18 : 18 }
+        moveTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.step(1.0 / 30.0)
+        }
+    }
+
+    private func step(_ dt: CGFloat) {
+        var origin = cluster.frame.origin
+        origin.x += velocity.x * dt
+        origin.y += velocity.y * dt
+        let maxX = max(0, bounds.width - cluster.frame.width)
+        let maxY = max(0, bounds.height - cluster.frame.height)
+        if origin.x <= 0 {
+            origin.x = 0
+            velocity.x = abs(velocity.x)
+        } else if origin.x >= maxX {
+            origin.x = maxX
+            velocity.x = -abs(velocity.x)
+        }
+        if origin.y <= 0 {
+            origin.y = 0
+            velocity.y = abs(velocity.y)
+        } else if origin.y >= maxY {
+            origin.y = maxY
+            velocity.y = -abs(velocity.y)
+        }
+        cluster.setFrameOrigin(origin)
+    }
+
+    private func layoutClusterContents() {
+        timeLabel.sizeToFit()
+        dateLabel.sizeToFit()
+        let textWidth = max(timeLabel.frame.width, dateLabel.frame.width, 120)
+        let width = textWidth + 32
+        let lockHeight: CGFloat = 80
+        let timeHeight: CGFloat = 76
+        let dateHeight = max(dateLabel.frame.height, 28)
+        let gap: CGFloat = 12
+        let height = lockHeight + gap + timeHeight + gap + dateHeight
+        let origin = cluster.frame.origin
+        cluster.frame = NSRect(x: origin.x, y: origin.y, width: width, height: height)
+        lockView.frame = NSRect(x: (width - 80) / 2, y: height - lockHeight, width: 80, height: lockHeight)
+        timeLabel.frame = NSRect(x: 0, y: dateHeight + gap, width: width, height: timeHeight)
+        dateLabel.frame = NSRect(x: 0, y: 0, width: width, height: dateHeight)
+    }
+
+    private func clampCluster() {
+        let maxX = max(0, bounds.width - cluster.frame.width)
+        let maxY = max(0, bounds.height - cluster.frame.height)
+        var origin = cluster.frame.origin
+        origin.x = min(max(0, origin.x), maxX)
+        origin.y = min(max(0, origin.y), maxY)
+        cluster.setFrameOrigin(origin)
     }
 }
 
